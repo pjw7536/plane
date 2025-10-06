@@ -1579,6 +1579,47 @@ def issue_activity(
         # Save all the values to database
         issue_activities_created = IssueActivity.objects.bulk_create(issue_activities)
 
+        # Broadcast project issue updates for realtime listeners
+        if issue_id:
+            try:
+                ri = redis_instance()
+                project_channel = str(project_id)
+                payload = {
+                    "type": type,
+                    "issue_id": str(issue_id),
+                    "project_id": project_channel,
+                    "actor_id": str(actor_id) if actor_id else None,
+                    "timestamp": int(epoch) if isinstance(epoch, (int, float)) else None,
+                }
+
+                def _deserialize(raw_value):
+                    if raw_value is None:
+                        return None
+                    if isinstance(raw_value, (dict, list)):
+                        return raw_value
+                    if isinstance(raw_value, str):
+                        try:
+                            return json.loads(raw_value)
+                        except ValueError:
+                            return raw_value
+                    return str(raw_value)
+
+                requested_payload = _deserialize(requested_data)
+                if requested_payload is not None:
+                    payload["requested_data"] = requested_payload
+
+                current_payload = _deserialize(current_instance)
+                if current_payload is not None:
+                    payload["current_instance"] = current_payload
+
+                ri.publish(
+                    f"issue_events:{project_channel}",
+                    json.dumps(payload, default=str),
+                )
+            except Exception as publish_error:
+                # Failure to broadcast should not block primary flow
+                log_exception(publish_error)
+
         if notification:
             notifications.delay(
                 type=type,
